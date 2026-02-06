@@ -42,12 +42,15 @@ class RegularizationActivityStreamlit:
             st.session_state.models = {}
             st.session_state.results = {}
 
-    def generate_data(self, n_samples=500, noise_level=2.0):
-        """Generate synthetic dataset"""
+    def generate_data(self, n_samples=500, noise_level=2.0, noise_distribution='normal'):
+        """Generate synthetic dataset with flexible noise options"""
         np.random.seed(42)
 
         n_features = 8
         st.session_state.feature_names = [f'Feature_{i+1}' for i in range(n_features)]
+        st.session_state.n_samples = n_samples
+        st.session_state.noise_level = noise_level
+        st.session_state.noise_distribution = noise_distribution
 
         # Generate base features with some correlation
         X = np.random.randn(n_samples, n_features)
@@ -57,8 +60,23 @@ class RegularizationActivityStreamlit:
         # True coefficients
         st.session_state.true_coefficients = np.array([5.0, 3.0, 0.0, 0.0, 2.0, 0.0, 0.0, 0.0])
 
-        # Generate target
-        y = X @ st.session_state.true_coefficients + np.random.randn(n_samples) * noise_level
+        # Generate target with specified noise distribution
+        signal = X @ st.session_state.true_coefficients
+
+        if noise_distribution == 'normal':
+            noise = np.random.randn(n_samples) * noise_level
+        elif noise_distribution == 'uniform':
+            noise = np.random.uniform(-noise_level, noise_level, n_samples)
+        elif noise_distribution == 'exponential':
+            noise = (np.random.exponential(noise_level, n_samples) - noise_level)
+        elif noise_distribution == 'laplace':
+            noise = np.random.laplace(0, noise_level, n_samples)
+        elif noise_distribution == 't-distribution':
+            noise = np.random.standard_t(df=3, size=n_samples) * noise_level
+        else:  # default to normal
+            noise = np.random.randn(n_samples) * noise_level
+
+        y = signal + noise
 
         # Split data
         st.session_state.X_train, st.session_state.X_test, \
@@ -119,9 +137,17 @@ class RegularizationActivityStreamlit:
         }
 
     def fit_ridge_regression(self, alphas_to_test=[0.1, 1.0, 10.0, 100.0]):
-        """Fit ridge regression with CV"""
-        alphas_cv = np.logspace(-2, 3, 100)
-        ridge_cv = RidgeCV(alphas=alphas_cv, cv=5)
+        """Fit ridge regression with CV - optimized for large datasets"""
+        # Reduce number of alphas and CV folds for very large datasets
+        n_train = len(st.session_state.X_train)
+        if n_train > 5000:
+            alphas_cv = np.logspace(-2, 3, 50)  # Fewer alphas for speed
+            cv_folds = 3
+        else:
+            alphas_cv = np.logspace(-2, 3, 100)
+            cv_folds = 5
+
+        ridge_cv = RidgeCV(alphas=alphas_cv, cv=cv_folds)
         ridge_cv.fit(st.session_state.X_train, st.session_state.y_train)
 
         y_train_pred = ridge_cv.predict(st.session_state.X_train)
@@ -138,9 +164,19 @@ class RegularizationActivityStreamlit:
         }
 
     def fit_lasso_regression(self, alphas_to_test=[0.01, 0.1, 1.0, 10.0]):
-        """Fit lasso regression with CV"""
-        alphas_cv = np.logspace(-3, 1, 100)
-        lasso_cv = LassoCV(alphas=alphas_cv, cv=5, max_iter=10000)
+        """Fit lasso regression with CV - optimized for large datasets"""
+        # Adjust parameters based on dataset size
+        n_train = len(st.session_state.X_train)
+        if n_train > 5000:
+            alphas_cv = np.logspace(-3, 1, 50)  # Fewer alphas for speed
+            cv_folds = 3
+            max_iterations = 20000  # More iterations for convergence with large data
+        else:
+            alphas_cv = np.logspace(-3, 1, 100)
+            cv_folds = 5
+            max_iterations = 10000
+
+        lasso_cv = LassoCV(alphas=alphas_cv, cv=cv_folds, max_iter=max_iterations, n_jobs=-1)
         lasso_cv.fit(st.session_state.X_train, st.session_state.y_train)
 
         y_train_pred = lasso_cv.predict(st.session_state.X_train)
@@ -160,8 +196,12 @@ class RegularizationActivityStreamlit:
         }
 
     def plot_ridge_path(self):
-        """Plot ridge coefficient paths"""
-        alphas = np.logspace(-2, 3, 50)
+        """Plot ridge coefficient paths - optimized for large datasets"""
+        # Use fewer alpha points for large datasets to speed up plotting
+        n_train = len(st.session_state.X_train)
+        n_alphas = 30 if n_train > 5000 else 50
+
+        alphas = np.logspace(-2, 3, n_alphas)
         coefs = []
         for alpha in alphas:
             ridge = Ridge(alpha=alpha)
@@ -185,11 +225,16 @@ class RegularizationActivityStreamlit:
         return fig
 
     def plot_lasso_path(self):
-        """Plot lasso coefficient paths"""
-        alphas = np.logspace(-3, 1, 50)
+        """Plot lasso coefficient paths - optimized for large datasets"""
+        # Use fewer alpha points for large datasets to speed up plotting
+        n_train = len(st.session_state.X_train)
+        n_alphas = 30 if n_train > 5000 else 50
+        max_iter = 20000 if n_train > 5000 else 10000
+
+        alphas = np.logspace(-3, 1, n_alphas)
         coefs = []
         for alpha in alphas:
-            lasso = Lasso(alpha=alpha, max_iter=10000)
+            lasso = Lasso(alpha=alpha, max_iter=max_iter)
             lasso.fit(st.session_state.X_train, st.session_state.y_train)
             coefs.append(lasso.coef_)
 
@@ -210,22 +255,35 @@ class RegularizationActivityStreamlit:
         return fig
 
     def plot_cv_curves(self):
-        """Plot CV curves for Ridge and Lasso"""
-        alphas = np.logspace(-2, 3, 30)
+        """Plot CV curves for Ridge and Lasso - optimized for large datasets"""
+        # Adjust parameters based on dataset size
+        n_train = len(st.session_state.X_train)
+        if n_train > 5000:
+            n_alphas = 20  # Fewer alphas for speed
+            cv_folds = 3
+            max_iter = 20000
+        else:
+            n_alphas = 30
+            cv_folds = 5
+            max_iter = 10000
+
+        alphas = np.logspace(-2, 3, n_alphas)
 
         ridge_cv_scores = []
         lasso_cv_scores = []
 
         for alpha in alphas:
             ridge = Ridge(alpha=alpha)
-            lasso = Lasso(alpha=alpha, max_iter=10000)
+            lasso = Lasso(alpha=alpha, max_iter=max_iter)
 
             ridge_scores = cross_val_score(ridge, st.session_state.X_train,
                                           st.session_state.y_train,
-                                          cv=5, scoring='neg_mean_squared_error')
+                                          cv=cv_folds, scoring='neg_mean_squared_error',
+                                          n_jobs=-1)
             lasso_scores = cross_val_score(lasso, st.session_state.X_train,
                                           st.session_state.y_train,
-                                          cv=5, scoring='neg_mean_squared_error')
+                                          cv=cv_folds, scoring='neg_mean_squared_error',
+                                          n_jobs=-1)
 
             ridge_cv_scores.append(-ridge_scores.mean())
             lasso_cv_scores.append(-lasso_scores.mean())
@@ -446,30 +504,58 @@ def main():
         This controlled environment lets us see exactly what the models are doing.
         """)
 
-        col1, col2 = st.columns([1, 1])
+        st.markdown("### ⚙️ Dataset Configuration")
+
+        col1, col2, col3 = st.columns([1, 1, 1])
 
         with col1:
-            n_samples = st.slider("Number of samples", 100, 1000, 500, 50)
+            n_samples = st.slider("Number of samples", 100, 10000, 500, 100,
+                                 help="Larger datasets test model scalability")
         with col2:
-            noise_level = st.slider("Noise level", 0.5, 5.0, 2.0, 0.5)
+            noise_level = st.slider("Noise level", 0.5, 20.0, 2.0, 0.5,
+                                   help="Higher noise makes the problem harder")
+        with col3:
+            noise_distribution = st.selectbox(
+                "Noise distribution",
+                ["normal", "uniform", "laplace", "t-distribution", "exponential"],
+                help="Different noise patterns test model robustness"
+            )
+
+        # Add info box about distributions
+        with st.expander("ℹ️ About Noise Distributions"):
+            st.markdown("""
+            - **Normal (Gaussian)**: Standard assumption, symmetric, bell-shaped
+            - **Uniform**: All values equally likely in a range, no outliers
+            - **Laplace**: Heavy-tailed, more outliers than normal
+            - **t-distribution**: Very heavy-tailed, extreme outliers
+            - **Exponential**: Asymmetric, skewed noise pattern
+            """)
 
         if st.button("🎲 Generate Data", type="primary"):
             with st.spinner("Generating data..."):
-                activity.generate_data(n_samples, noise_level)
+                activity.generate_data(n_samples, noise_level, noise_distribution)
             st.success("✅ Data generated successfully!")
+
+            # Show dataset stats
+            if n_samples > 5000:
+                st.info("⚡ Large dataset detected. Models will use optimized settings for faster computation.")
 
         if st.session_state.data_generated:
             st.markdown("### 📊 Dataset Information")
 
-            col1, col2, col3, col4 = st.columns(4)
+            col1, col2, col3, col4, col5 = st.columns(5)
             with col1:
-                st.metric("Total Samples", n_samples)
+                st.metric("Total Samples", f"{st.session_state.n_samples:,}")
             with col2:
-                st.metric("Training Samples", len(st.session_state.X_train))
+                st.metric("Training Samples", f"{len(st.session_state.X_train):,}")
             with col3:
-                st.metric("Test Samples", len(st.session_state.X_test))
+                st.metric("Test Samples", f"{len(st.session_state.X_test):,}")
             with col4:
                 st.metric("Features", len(st.session_state.feature_names))
+            with col5:
+                st.metric("Noise Level", f"{st.session_state.noise_level:.1f}")
+
+            st.info(f"**Noise Distribution:** {st.session_state.noise_distribution.title()}")
 
             st.markdown("### 🎯 True Coefficients")
             st.markdown("These are the **ground truth** values we're trying to recover:")

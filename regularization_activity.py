@@ -31,7 +31,7 @@ class RegularizationActivity:
         self.models = {}
         self.results = {}
 
-    def generate_data(self):
+    def generate_data(self, n_samples=500, noise_level=2.0, noise_distribution='normal'):
         """Part 1: Generate synthetic dataset with known relationships"""
         print("\n" + "="*70)
         print("PART 1: DATA GENERATION")
@@ -40,8 +40,7 @@ class RegularizationActivity:
         # Set random seed for reproducibility
         np.random.seed(42)
 
-        # Generate 500 samples with 8 features
-        n_samples = 500
+        # Generate samples with 8 features
         n_features = 8
 
         # Create feature names
@@ -58,17 +57,37 @@ class RegularizationActivity:
         # Some features are important, others are noise
         self.true_coefficients = np.array([5.0, 3.0, 0.0, 0.0, 2.0, 0.0, 0.0, 0.0])
 
-        # Generate target variable with noise
-        y = X @ self.true_coefficients + np.random.randn(n_samples) * 2.0
+        # Generate target variable with specified noise distribution
+        signal = X @ self.true_coefficients
+
+        if noise_distribution == 'normal':
+            noise = np.random.randn(n_samples) * noise_level
+        elif noise_distribution == 'uniform':
+            noise = np.random.uniform(-noise_level, noise_level, n_samples)
+        elif noise_distribution == 'exponential':
+            noise = (np.random.exponential(noise_level, n_samples) - noise_level)
+        elif noise_distribution == 'laplace':
+            noise = np.random.laplace(0, noise_level, n_samples)
+        elif noise_distribution == 't-distribution':
+            noise = np.random.standard_t(df=3, size=n_samples) * noise_level
+        else:  # default to normal
+            noise = np.random.randn(n_samples) * noise_level
+
+        y = signal + noise
 
         # Split data
         self.X_train, self.X_test, self.y_train, self.y_test = train_test_split(
             X, y, test_size=0.3, random_state=42
         )
 
-        print(f"\n✓ Generated dataset with {n_samples} samples and {n_features} features")
-        print(f"  - Training set: {len(self.X_train)} samples")
-        print(f"  - Test set: {len(self.X_test)} samples")
+        print(f"\n✓ Generated dataset with {n_samples:,} samples and {n_features} features")
+        print(f"  - Training set: {len(self.X_train):,} samples")
+        print(f"  - Test set: {len(self.X_test):,} samples")
+        print(f"  - Noise level: {noise_level}")
+        print(f"  - Noise distribution: {noise_distribution}")
+        if n_samples > 5000:
+            print(f"\n  ⚡ Large dataset detected! Models will use optimized settings.")
+
         print(f"\n✓ True coefficients (what we're trying to recover):")
         for name, coef in zip(self.feature_names, self.true_coefficients):
             if coef != 0:
@@ -173,9 +192,18 @@ class RegularizationActivity:
             print(f"α = {alpha:6.1f} → Test R² = {test_r2:.4f}, Test RMSE = {test_rmse:.4f}")
 
         # Use cross-validation to find optimal alpha
-        print("\n🎯 FINDING OPTIMAL λ USING CROSS-VALIDATION...")
-        alphas_cv = np.logspace(-2, 3, 100)
-        ridge_cv = RidgeCV(alphas=alphas_cv, cv=5)
+        # Optimize for large datasets
+        n_train = len(self.X_train)
+        if n_train > 5000:
+            alphas_cv = np.logspace(-2, 3, 50)
+            cv_folds = 3
+            print("\n🎯 FINDING OPTIMAL λ USING CROSS-VALIDATION (optimized for large dataset)...")
+        else:
+            alphas_cv = np.logspace(-2, 3, 100)
+            cv_folds = 5
+            print("\n🎯 FINDING OPTIMAL λ USING CROSS-VALIDATION...")
+
+        ridge_cv = RidgeCV(alphas=alphas_cv, cv=cv_folds)
         ridge_cv.fit(self.X_train, self.y_train)
 
         optimal_alpha = ridge_cv.alpha_
@@ -243,9 +271,20 @@ class RegularizationActivity:
             print(f"α = {alpha:6.2f} → Test R² = {test_r2:.4f}, Test RMSE = {test_rmse:.4f}, Features used = {n_nonzero}")
 
         # Use cross-validation to find optimal alpha
-        print("\n🎯 FINDING OPTIMAL λ USING CROSS-VALIDATION...")
-        alphas_cv = np.logspace(-3, 1, 100)
-        lasso_cv = LassoCV(alphas=alphas_cv, cv=5, max_iter=10000)
+        # Optimize for large datasets
+        n_train = len(self.X_train)
+        if n_train > 5000:
+            alphas_cv = np.logspace(-3, 1, 50)
+            cv_folds = 3
+            max_iterations = 20000
+            print("\n🎯 FINDING OPTIMAL λ USING CROSS-VALIDATION (optimized for large dataset)...")
+        else:
+            alphas_cv = np.logspace(-3, 1, 100)
+            cv_folds = 5
+            max_iterations = 10000
+            print("\n🎯 FINDING OPTIMAL λ USING CROSS-VALIDATION...")
+
+        lasso_cv = LassoCV(alphas=alphas_cv, cv=cv_folds, max_iter=max_iterations, n_jobs=-1)
         lasso_cv.fit(self.X_train, self.y_train)
 
         optimal_alpha = lasso_cv.alpha_
@@ -543,11 +582,16 @@ are handled differently by Ridge (keeps both, shrinks together) vs. Lasso
     def _plot_ridge_cv(self, ridge_cv, alphas):
         """Plot Ridge cross-validation results"""
         # Calculate CV scores for visualization
+        # Optimize for large datasets
+        n_train = len(self.X_train)
+        cv_folds = 3 if n_train > 5000 else 5
+
         cv_scores = []
         for alpha in alphas:
             ridge = Ridge(alpha=alpha)
             scores = cross_val_score(ridge, self.X_train, self.y_train,
-                                     cv=5, scoring='neg_mean_squared_error')
+                                     cv=cv_folds, scoring='neg_mean_squared_error',
+                                     n_jobs=-1)
             cv_scores.append(-scores.mean())
 
         plt.figure(figsize=(10, 6))
@@ -566,9 +610,13 @@ are handled differently by Ridge (keeps both, shrinks together) vs. Lasso
 
     def _plot_lasso_path(self, alphas):
         """Plot coefficient paths for Lasso"""
+        # Optimize for large datasets
+        n_train = len(self.X_train)
+        max_iter = 20000 if n_train > 5000 else 10000
+
         coefs = []
         for alpha in alphas:
-            lasso = Lasso(alpha=alpha, max_iter=10000)
+            lasso = Lasso(alpha=alpha, max_iter=max_iter)
             lasso.fit(self.X_train, self.y_train)
             coefs.append(lasso.coef_)
 
@@ -591,12 +639,18 @@ are handled differently by Ridge (keeps both, shrinks together) vs. Lasso
 
     def _plot_lasso_cv(self, lasso_cv, alphas):
         """Plot Lasso cross-validation results"""
+        # Optimize for large datasets
+        n_train = len(self.X_train)
+        cv_folds = 3 if n_train > 5000 else 5
+        max_iter = 20000 if n_train > 5000 else 10000
+
         cv_scores = []
         n_features = []
         for alpha in alphas:
-            lasso = Lasso(alpha=alpha, max_iter=10000)
+            lasso = Lasso(alpha=alpha, max_iter=max_iter)
             scores = cross_val_score(lasso, self.X_train, self.y_train,
-                                     cv=5, scoring='neg_mean_squared_error')
+                                     cv=cv_folds, scoring='neg_mean_squared_error',
+                                     n_jobs=-1)
             cv_scores.append(-scores.mean())
             lasso.fit(self.X_train, self.y_train)
             n_features.append(np.sum(lasso.coef_ != 0))
@@ -963,8 +1017,43 @@ def main():
             break
 
         elif choice == '1':
-            activity.generate_data()
-            data_generated = True
+            # Get user input for data generation parameters
+            print("\n" + "="*70)
+            print("Configure Data Generation")
+            print("="*70)
+
+            try:
+                n_samples = int(input("\nNumber of samples (100-10000) [default: 500]: ") or "500")
+                n_samples = max(100, min(10000, n_samples))  # Clamp between 100 and 10000
+
+                noise_level = float(input("Noise level (0.5-20.0) [default: 2.0]: ") or "2.0")
+                noise_level = max(0.5, min(20.0, noise_level))  # Clamp between 0.5 and 20.0
+
+                print("\nNoise distribution options:")
+                print("  1. Normal (Gaussian) - standard assumption, symmetric")
+                print("  2. Uniform - all values equally likely, no outliers")
+                print("  3. Laplace - heavy-tailed, more outliers")
+                print("  4. t-distribution - very heavy-tailed, extreme outliers")
+                print("  5. Exponential - asymmetric, skewed")
+
+                dist_choice = input("Select noise distribution (1-5) [default: 1]: ") or "1"
+                dist_map = {
+                    '1': 'normal',
+                    '2': 'uniform',
+                    '3': 'laplace',
+                    '4': 't-distribution',
+                    '5': 'exponential'
+                }
+                noise_distribution = dist_map.get(dist_choice, 'normal')
+
+                activity.generate_data(n_samples, noise_level, noise_distribution)
+                data_generated = True
+
+            except ValueError:
+                print("\n❌ Invalid input. Using default values.")
+                activity.generate_data()
+                data_generated = True
+
             input("\nPress Enter to continue...")
 
         elif choice in ['2', '3', '4', '5']:
